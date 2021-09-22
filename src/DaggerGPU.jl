@@ -1,8 +1,10 @@
 module DaggerGPU
 
-using Dagger, Requires, Adapt
+using Dagger, MemPool, Requires, Adapt
 using Distributed
 using KernelAbstractions
+
+import Dagger: Chunk
 
 macro gpuproc(PROC, T)
     quote
@@ -14,8 +16,22 @@ macro gpuproc(PROC, T)
         Dagger.iscompatible_arg(proc::Dagger.ThreadProc, opts, x::$T) = false
 
         # Adapt to/from the appropriate type
-        Dagger.move(from_proc::OSProc, to_proc::$PROC, x) = adapt($T, x)
-        Dagger.move(from_proc::$PROC, to_proc::OSProc, x) = adapt(Array, x)
+        function Dagger.move(from_proc::OSProc, to_proc::$PROC, x::Chunk)
+            from_pid = from_proc.pid
+            to_pid = Dagger.get_parent(to_proc).pid
+            @assert myid() == to_pid
+            adapt($T, remotecall_fetch(from_pid, x) do x
+                poolget(x.handle)
+            end)
+        end
+        function Dagger.move(from_proc::$PROC, to_proc::OSProc, x::Chunk)
+            from_pid = Dagger.get_parent(from_proc).pid
+            to_pid = to_proc.pid
+            @assert myid() == to_pid
+            remotecall_fetch(from_pid, x) do x
+                adapt(Array, poolget(x.handle))
+            end
+        end
     end
 end
 
@@ -31,7 +47,7 @@ function __init__()
     @require CUDA="052768ef-5323-5732-b1bb-66c8b64840ba" begin
         include("cu.jl")
     end
-    @require ROCArrays="ddf941ca-5d6a-11e9-36cc-a3fed13dd2fc" begin
+    @require AMDGPU="21141c5a-9bdb-4563-92ae-f87d6854732e" begin
         include("roc.jl")
     end
 end
