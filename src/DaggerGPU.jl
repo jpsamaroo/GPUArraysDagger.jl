@@ -10,7 +10,7 @@ import LinearAlgebra
 const CPUProc = Union{OSProc, Dagger.ThreadProc}
 
 struct Kernel{F} end
-Kernel(f) = Kernel{f}()
+Kernel(F) = Kernel{F}()
 
 function (::Kernel{F})(args...; ndrange) where F
     @nospecialize args
@@ -43,7 +43,7 @@ move_optimized(from_proc::Dagger.Processor,
                to_proc::Dagger.Processor,
                x) = nothing
 
-kernel_backend() = kernel_backend(Dagger.Sch.thunk_processor())
+kernel_backend() = kernel_backend(Dagger.thunk_processor())
 kernel_backend(::Dagger.ThreadProc) = CPU()
 
 using Requires
