@@ -286,6 +286,26 @@ function Dagger.execute!(proc::CuArrayDeviceProc, f, args...; kwargs...)
     end
 end
 
+CuArray(H::Dagger.HaloArray) = convert(CuArray, H)
+Base.convert(::Type{C}, H::Dagger.HaloArray) where {C<:CuArray} =
+    Dagger.HaloArray(C(H.center),
+                     C.(H.edges),
+                     C.(H.corners),
+                     H.halo_width)
+Adapt.adapt_structure(to::CUDA.KernelAdaptor, H::Dagger.HaloArray) =
+    Dagger.HaloArray(adapt(to, H.center),
+                     adapt.(Ref(to), H.edges),
+                     adapt.(Ref(to), H.corners),
+                     H.halo_width)
+function Dagger.inner_stencil_proc!(::CuArrayDeviceProc, f, output, read_vars)
+    DaggerGPU.Kernel(_inner_stencil!)(f, output, read_vars; ndrange=size(output))
+    return
+end
+@kernel function _inner_stencil!(f, output, read_vars)
+    idx = @index(Global, Cartesian)
+    f(idx, output, read_vars)
+end
+
 DaggerGPU.processor(::Val{:CUDA}) = CuArrayDeviceProc
 DaggerGPU.cancompute(::Val{:CUDA}) = CUDA.has_cuda()
 DaggerGPU.kernel_backend(::CuArrayDeviceProc) = CUDABackend()
