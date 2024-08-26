@@ -162,8 +162,19 @@ function Dagger.move!(to_space::CUDAVRAMMemorySpace, from_space::CUDAVRAMMemoryS
     return
 end
 
+is_non_gpu(::Function) = true
+is_non_gpu(::Type) = true
+is_non_gpu(::Symbol) = true
+is_non_gpu(::String) = true
+function is_non_gpu(x::T) where T
+    isbits(x) && return true
+    isprimitivetype(T) && return true
+    return false
+end
+
 # Out-of-place HtoD
 function Dagger.move(from_proc::CPUProc, to_proc::CuArrayDeviceProc, x)
+    is_non_gpu(x) && return x
     with_context(to_proc) do
         arr = adapt(CuArray, x)
         CUDA.synchronize()
@@ -175,6 +186,7 @@ function Dagger.move(from_proc::CPUProc, to_proc::CuArrayDeviceProc, x::Chunk)
     to_w = Dagger.root_worker_id(to_proc)
     @assert myid() == to_w
     cpu_data = remotecall_fetch(unwrap, from_w, x)
+    is_non_gpu(cpu_data) && return cpu_data
     with_context(to_proc) do
         arr = adapt(CuArray, cpu_data)
         CUDA.synchronize()
@@ -195,6 +207,7 @@ end
 
 # Out-of-place DtoH
 function Dagger.move(from_proc::CuArrayDeviceProc, to_proc::CPUProc, x)
+    is_non_gpu(x) && return x
     with_context(from_proc) do
         CUDA.synchronize()
         _x = adapt(Array, x)
@@ -274,9 +287,12 @@ function Dagger.move(from_proc::CuArrayDeviceProc, to_proc::CuArrayDeviceProc, x
     end
 end
 
-# Adapt generic functions
+# Adapt generic functions/types
 Dagger.move(from_proc::CPUProc, to_proc::CuArrayDeviceProc, x::Function) = x
+Dagger.move(from_proc::CPUProc, to_proc::CuArrayDeviceProc, x::Type) = x
 Dagger.move(from_proc::CPUProc, to_proc::CuArrayDeviceProc, x::Chunk{T}) where {T<:Function} =
+    Dagger.move(from_proc, to_proc, fetch(x))
+Dagger.move(from_proc::CPUProc, to_proc::CuArrayDeviceProc, x::Chunk{T}) where {T<:Type} =
     Dagger.move(from_proc, to_proc, fetch(x))
 
 # Adapt BLAS/LAPACK functions
