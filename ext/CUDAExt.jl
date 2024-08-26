@@ -101,6 +101,20 @@ function with_context(f, x)
     end
 end
 
+#=
+function synchronize_noisy()
+    t = (@timed CUDA.synchronize()).time
+    bt = backtrace()
+    iob = IOBuffer()
+    println(iob, "Synchronizing ($t seconds):")
+    Base.show_backtrace(iob, bt)
+    println(iob)
+    seekstart(iob)
+    msg = String(take!(iob))
+    @info "$msg"
+end
+=#
+
 function sync_with_context(x::Union{Dagger.Processor,Dagger.MemorySpace})
     if Dagger.root_worker_id(x) == myid()
         with_context(CUDA.synchronize, x)
@@ -234,21 +248,38 @@ function Dagger.move(from_proc::CuArrayDeviceProc, to_proc::CPUProc, x::CuArray{
     end
 end
 
+function array_tracked(A::CuArray, proc::CuArrayDeviceProc)
+    dev_stream = STREAMS[proc.device]
+    A_stream = A.data.rc.obj.stream
+    if dev_stream == A_stream
+        return true
+    end
+    @warn "Untracked: $dev_stream vs $A_stream"
+    return false
+end
+array_tracked(A::CuArray, space::CUDAVRAMMemorySpace) =
+    array_tracked(A, space_to_proc(space))
+
 # Out-of-place DtoD
 function Dagger.move(from_proc::CuArrayDeviceProc, to_proc::CuArrayDeviceProc, x::Dagger.Chunk{T}) where T<:CuArray
     if from_proc == to_proc
         # Same process and GPU, no change
         arr = unwrap(x)
-        with_context(CUDA.synchronize, from_proc)
+        if !array_tracked(arr, from_proc)
+            with_context(CUDA.synchronize, from_proc)
+        end
         return arr
     elseif Dagger.root_worker_id(from_proc) == Dagger.root_worker_id(to_proc)
         # Same process but different GPUs, use DtoD copy
         from_arr = unwrap(x)
-        with_context(CUDA.synchronize, from_proc)
+        if !array_tracked(from_arr, from_proc)
+            with_context(CUDA.synchronize, from_proc)
+        else
+            sync_across!(from_proc, to_proc)
+        end
         return with_context(to_proc) do
             to_arr = similar(from_arr)
             copyto!(to_arr, from_arr)
-            CUDA.synchronize()
             return to_arr
         end
     elseif Dagger.system_uuid(from_proc.owner) == Dagger.system_uuid(to_proc.owner) && from_proc.device_uuid == to_proc.device_uuid
