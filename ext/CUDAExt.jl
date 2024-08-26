@@ -58,8 +58,10 @@ function Dagger.aliasing(x::CuArray{T}) where T
     return Dagger.ContiguousAliasing(Dagger.MemorySpan{S}(ptr, sizeof(T)*length(x)))
 end
 
-Dagger.memory_spaces(proc::CuArrayDeviceProc) = Set([CUDAVRAMMemorySpace(proc.owner, proc.device, proc.device_uuid)])
-Dagger.processors(space::CUDAVRAMMemorySpace) = Set([CuArrayDeviceProc(space.owner, space.device, space.device_uuid)])
+proc_to_space(proc::CuArrayDeviceProc) = CUDAVRAMMemorySpace(proc.owner, proc.device, proc.device_uuid)
+space_to_proc(space::CUDAVRAMMemorySpace) = CuArrayDeviceProc(space.owner, space.device, space.device_uuid)
+Dagger.memory_spaces(proc::CuArrayDeviceProc) = Set([proc_to_space(proc)])
+Dagger.processors(space::CUDAVRAMMemorySpace) = Set([space_to_proc(space)])
 
 Dagger.unsafe_free!(x::CuArray) = CUDA.unsafe_free!(x)
 
@@ -112,13 +114,20 @@ function sync_across!(from_space::CUDAVRAMMemorySpace, to_space::CUDAVRAMMemoryS
     if Dagger.root_worker_id(from_space) == Dagger.root_worker_id(to_space)
         @assert from_space.device != to_space.device
         @assert Dagger.root_worker_id(from_space) == myid()
-        event = CuEvent()
-        CUDA.record(event, STREAMS[from_space.device])
-        CUDA.wait(event, STREAMS[to_space.device])
+        event = with_context(from_space) do
+            event = CuEvent()
+            CUDA.record(event, STREAMS[from_space.device])
+            event
+        end
+        with_context(to_space) do
+            CUDA.wait(event, STREAMS[to_space.device])
+        end
     else
         sync_with_context(from_space)
     end
 end
+sync_across!(from_proc::CuArrayDeviceProc, to_proc::CuArrayDeviceProc) =
+    sync_across!(proc_to_space(from_proc), proc_to_space(to_proc))
 
 # Allocations
 Dagger.allocate_array_func(::CuArrayDeviceProc, ::typeof(rand)) = CUDA.rand
@@ -147,8 +156,7 @@ function Dagger.move!(to_space::CUDAVRAMMemorySpace, from_space::Dagger.CPURAMMe
     return
 end
 function Dagger.move!(to_space::CUDAVRAMMemorySpace, from_space::CUDAVRAMMemorySpace, to::AbstractArray{T,N}, from::AbstractArray{T,N}) where {T,N}
-    # TODO: sync_across!(from_space, to_space)
-    sync_with_context(from_space)
+    sync_across!(from_space, to_space)
     with_context!(to_space)
     copyto!(to, from)
     return
